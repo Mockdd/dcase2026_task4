@@ -15,29 +15,6 @@ silence 슬롯(label all-zero)은 DoA target = [0, 0, 0].
 """
 import torch
 from .base_lightningmodule import BaseLightningModule
-
-
-def _extract_doa_from_metadata(metadata_list, K: int, device) -> torch.Tensor:
-    """
-    metadata_list : list of B 개 dict (SpAudSyn synthesize 출력)
-                    metadata['fg_events'][k]['metadata']['event_position'] = [[x,y,z]]
-    Returns: doas [B, K, 3]
-    """
-    B = len(metadata_list)
-    doas = torch.zeros(B, K, 3, device=device)
-    for b, meta in enumerate(metadata_list):
-        events = meta.get('fg_events', [])
-        for k, ev in enumerate(events):
-            if k >= K:
-                break
-            pos = ev.get('metadata', {}).get('event_position', [[0, 0, 0]])
-            xyz = pos[0] if isinstance(pos[0], (list, tuple)) else pos
-            doas[b, k, 0] = xyz[0]
-            doas[b, k, 1] = xyz[1]
-            doas[b, k, 2] = xyz[2]
-    return doas
-
-
 class SpatialSeparatorLightning(BaseLightningModule):
     """
     YAML lightning_module 섹션:
@@ -70,32 +47,11 @@ class SpatialSeparatorLightning(BaseLightningModule):
     # ──────────────────────────────────────────────────────────
 
     def _build_targets(self, batch: dict) -> dict:
-        """배치에서 target dict 구성."""
-        device = batch['mixture'].device
-        B = batch['mixture'].shape[0]
-        K = batch['dry_sources'].shape[1]   # K = n_sources
-
-        # ── waveform target: [B, K, T] (1-ch dry source squeeze)
-        tgt_wav = batch['dry_sources'].squeeze(2)      # [B, K, 1, T] → [B, K, T]
-
-        # ── label_vector: [B, K, 18]
-        tgt_lv = batch['label_vector']                 # [B, K, 18]  (stack 모드)
-        if tgt_lv.dim() == 2:
-            # concat 모드 fallback: [B, K*18] → [B, K, 18]
-            n_cls = tgt_lv.shape[1] // K
-            tgt_lv = tgt_lv.view(B, K, n_cls)
-
-        # ── DoA target: [B, K, 3]
-        if 'metadata' in batch:
-            tgt_doa = _extract_doa_from_metadata(batch['metadata'], K, device)
-        else:
-            # metadata 없으면 zero (smoke test 대응)
-            tgt_doa = torch.zeros(B, K, 3, device=device)
-
         return {
-            'waveforms':    tgt_wav,
-            'doas':         tgt_doa,
-            'label_vector': tgt_lv,
+            'waveforms': batch['waveforms'],   # [B, K, T]
+            'labels':    batch['labels'],       # [B, K]  long
+            'doas':      batch['doas'],         # [B, K, 3]
+            'active':    batch['active'],       # [B, K]  bool
         }
 
     # ──────────────────────────────────────────────────────────
@@ -104,14 +60,8 @@ class SpatialSeparatorLightning(BaseLightningModule):
 
     def training_step_processing(self, batch: dict, batch_idx: int):
         batchsize = batch['mixture'].shape[0]
-
-        # forward
         output = self.model(batch['mixture'])   # SpatialSeparatorModel.forward()
-
-        # target
         target = self._build_targets(batch)
-
-        # loss
         loss_dict = self.loss_func(output, target)
 
         return batchsize, loss_dict
@@ -122,10 +72,8 @@ class SpatialSeparatorLightning(BaseLightningModule):
 
     def validation_step_processing(self, batch: dict, batch_idx: int):
         batchsize = batch['mixture'].shape[0]
-
         output = self.model(batch['mixture'])
         target = self._build_targets(batch)
-
         loss_dict = self.loss_func(output, target)
         loss_dict = {k: v.item() for k, v in loss_dict.items()}
 

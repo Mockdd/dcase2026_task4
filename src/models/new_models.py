@@ -60,7 +60,7 @@ class SpatialFeatureExtractor(nn.Module):
 class BEATS(nn.Module):
     def __init__(self):
         super().__init__()
-        checkpoint = torch.load("/content/BEATs_iter3_plus_AS2M.pt")
+        checkpoint = torch.load("/checkpoints/BEATs_iter3_plus_AS2M.pt")
         cfg = BEATsConfig(checkpoint['cfg'])
         self.beats = BEATs(cfg)
         self.beats.load_state_dict(checkpoint['model'])
