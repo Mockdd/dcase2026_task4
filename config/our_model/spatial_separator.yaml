@@ -1,12 +1,4 @@
----
-# ─────────────────────────────────────────────────────────
-# config/our_model/spatial_separator_smoke.yaml
-#
-# 스모크 테스트: dataset_length=8, val 끔, 1-step만 돌아가는지 확인
-# 실전 학습: dataset_length, batch_size, limit_* 값을 올려서 사용
-# ─────────────────────────────────────────────────────────
-task_name: spatial_separator_smoke
-description: "SpatialSeparatorModel smoke test (1-step, no val)"
+task_name: spatial_separator
 
 deterministic: True
 manual_seed: 0
@@ -15,7 +7,7 @@ manual_seed: 0
 # DataModule  (baseline DatasetS3 generate 모드 그대로 사용)
 # ════════════════════════════════════════════════════════════
 datamodule:
-    module: src.datamodules.datamodule
+    module: src.datamodules.new_datamodule
     main: DataModule
     args:
         train_dataloader:
@@ -23,7 +15,7 @@ datamodule:
             num_workers: 0         # 스모크: 0 (fork 없이 빠름). 실전: 4
             persistent_workers: false
             dataset:
-                module: src.datamodules.dataset
+                module: src.datamodules.new_dataset
                 main: DatasetS3
                 args:
                     config:
@@ -48,7 +40,7 @@ datamodule:
                         max_n_dupse: 2
                         dupse_exclusion_folder_depth: 1
                         snr_range: [5, 20]
-                        nevent_range: [1, 3]
+                        nevent_range: [0, 3]
                         ninterference_range: [0, 2]
                         inteference_snr_range: [0, 15]
                         dataset_length: 8     # ← 스모크용: 8개. 실전: 10112
@@ -56,11 +48,11 @@ datamodule:
                         fg_return:
                             dry: true
                             dry_channel: 0
-                            metadata: true   # DoA ground-truth 추출에 필요
+                            metadata: true
                     n_sources: 3
                     label_set: dcase2026t4
                     return_source: true
-                    label_vector_mode: stack    # [K, 18] 형태로 받아야 DoA 슬롯 매핑 가능
+                    label_vector_mode: stack 
                     silence_label_mode: zeros
                     return_meta: true           # metadata dict 포함 (event_position 접근)
 
@@ -73,7 +65,7 @@ datamodule:
         #     num_workers: 2
         #     persistent_workers: false
         #     dataset:
-        #         module: src.datamodules.dataset
+        #         module: src.datamodules.new_dataset
         #         main: DatasetS3
         #         args:
         #             config:
@@ -106,25 +98,28 @@ lightning_module:
                 K_max: 3
 
         loss:
-            module: src.training.loss.final_joint_pit_loss
-            main: get_loss_func
+            module: src.training.loss.new_final_loss
+            main: FinalJointPITLoss
             args:
-                w_wav: 1.0
-                w_doa: 0.5
-                w_cls: 0.5
+                n_classes: 18
+                weights:
+                    si_sdr: 0.3
+                    energy: 0.1
+                    ce: 1.0
+                    doa: 10.0
+
 
         optimizer:
             module: torch.optim
             main: AdamW
             args:
-                params: null          # BaseLightningModule이 자동 할당
+                params: null     
                 lr: 0.0001
                 betas: [0.9, 0.999]
                 eps: 1.0e-8
                 weight_decay: 0.01
-                amsgrad: true
 
-        is_validation: false          # 스모크: val 끔. 실전: true
+        is_validation: false          # 실전: true
 
 # ════════════════════════════════════════════════════════════
 # Trainer
@@ -163,13 +158,10 @@ train:
             num_nodes: 1
             precision: 32-true
             logger: null
-            fast_dev_run: false
             max_epochs: 1
             log_every_n_steps: 1
             use_distributed_sampler: true
-            sync_batchnorm: false
-            check_val_every_n_epoch: 1
-            val_check_interval: 1.0
+            sync_batchnorm: false # 멀티GPU 사용 시 배치 정규화 레이어 동기화 여부
             num_sanity_val_steps: 0       # ← 필수: val sanity check 끔
             enable_checkpointing: true
             enable_progress_bar: true

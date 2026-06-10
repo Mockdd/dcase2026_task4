@@ -10,19 +10,31 @@ class FinalJointPITLoss(nn.Module):
         self.silence_class_idx = n_classes
         
         # Loss 스케일 보정을 위한 가중치 (매우 중요)
-        # SNR은 절대값이 크므로 낮추고, DoA MSE는 값이 매우 작으므로 크게 뻥튀기합니다.
+        # SI-SDR은 절대값이 크므로 낮추고, DoA MSE는 값이 매우 작으므로 크게 뻥튀기합니다.
         self.weights = weights or {
-            'snr': 0.1,      # 보통 -15 ~ 15 단위
+            'si_sdr': 0.1,      # 보통 -15 ~ 15 단위
             'energy': 0.05,  # 빈 슬롯의 꼼수(Trivial zero) 방지를 위해 아주 작게 설정
             'ce': 1.0,       # 보통 0 ~ 5 단위
             'doa': 50.0      # 보통 0.01 ~ 1.0 단위 (강하게 학습시켜 K를 맞추게 유도)
         }
 
-    def compute_snr(self, pred_wav, target_wav, eps=1e-8):
-        """ 순수 SNR 연산 모듈 """
-        noise_energy = torch.sum((pred_wav - target_wav) ** 2, dim=-1) + eps
-        target_energy = torch.sum(target_wav ** 2, dim=-1) + eps
-        return 10 * torch.log10(target_energy / noise_energy)
+    def compute_si_sdr(self, pred_wav, target_wav, eps=1e-8):
+        pred  = pred_wav  - pred_wav.mean(dim=-1, keepdim=True)
+        target = target_wav - target_wav.mean(dim=-1, keepdim=True)
+
+        dot   = (pred * target).sum(dim=-1)                        # [B] or scalar
+        t_pow = (target ** 2).sum(dim=-1) + eps                    # [B]
+        alpha = dot / t_pow                                        # [B]
+
+        s_target = alpha.unsqueeze(-1) * target                    # [..., T]
+        e_noise  = pred - s_target
+
+        si_sdr = 10 * torch.log10(
+            (s_target ** 2).sum(dim=-1) + eps
+        ) - 10 * torch.log10(
+            (e_noise  ** 2).sum(dim=-1) + eps
+        )
+        return si_sdr
 
     def forward(self, preds, targets):
         """
@@ -49,17 +61,17 @@ class FinalJointPITLoss(nn.Module):
             t_active = targets['active'][:, t_idx] # [B]
             
             for p_idx in range(K):
-                # -- (1) 파형 Cost (SNR or Energy) --
+                # -- (1) 파형 Cost (SI-SDR or Energy) --
                 pred_w = preds['waveforms'][:, p_idx, :]
                 targ_w = targets['waveforms'][:, t_idx, :]
                 
-                snr_val = self.compute_snr(pred_w, targ_w)
+                si_sdr_val = self.compute_si_sdr(pred_w, targ_w)
                 pred_energy = torch.sum(pred_w ** 2, dim=-1)
                 
-                # Active면 -SNR(최소화), Inactive면 예측 파형의 에너지 패널티
+                # Active면 -SI-SDR(최소화), Inactive면 예측 파형의 에너지 패널티
                 # Fix: detach cost matrix values — only used for permutation search, not backprop
-                c_snr = torch.where(t_active, -snr_val * self.weights['snr'], 
-                                              pred_energy * self.weights['energy']).detach()
+                c_si_sdr = torch.where(t_active, -si_sdr_val * self.weights['si_sdr'], 
+                                       pred_energy * self.weights['energy']).detach()
                 
                 # -- (2) CE Cost --
                 # t_active가 False이면 targets['labels']가 silence(n_classes)을 향하도록 학습됨
@@ -74,7 +86,7 @@ class FinalJointPITLoss(nn.Module):
                                    reduction='none').mean(dim=-1).detach() * self.weights['doa']  # Fix: detach
                 
                 # 가중합산
-                cost_mtx[:, t_idx, p_idx] = c_snr + c_ce + c_doa
+                cost_mtx[:, t_idx, p_idx] = c_si_sdr + c_ce + c_doa
 
         # 2. 최적 순서(Permutation) 탐색
         perms = torch.tensor(list(permutations(range(K))), device=device) # [6, K]
@@ -91,8 +103,12 @@ class FinalJointPITLoss(nn.Module):
         best_perms = perms[best_idx] # [B, K]
 
         # 3. 최적 순서에 따른 최종 Loss 역전파(Backprop) 계산
-        final_loss = 0.0
-        loss_components = {'snr': 0.0, 'ce': 0.0, 'doa': 0.0}
+        final_loss = torch.tensor(0.0, device=device)
+        loss_components = {
+            'si_sdr': torch.tensor(0.0, device=device),
+            'ce':     torch.tensor(0.0, device=device),
+            'doa':    torch.tensor(0.0, device=device)
+        }
         
         for b in range(B):
             p = best_perms[b]
@@ -103,11 +119,11 @@ class FinalJointPITLoss(nn.Module):
                 pred_w = preds['waveforms'][b:b+1, p_idx, :]
                 targ_w = targets['waveforms'][b:b+1, t_idx, :]
                 
-                # SNR / Energy Loss
+                # SI-SDR / Energy Loss
                 if t_act:
-                    l_snr = -self.compute_snr(pred_w, targ_w)[0] * self.weights['snr']
+                    l_si_sdr = -self.compute_si_sdr(pred_w, targ_w)[0] * self.weights['si_sdr']
                 else:
-                    l_snr = torch.sum(pred_w ** 2) * self.weights['energy']
+                    l_si_sdr = torch.sum(pred_w ** 2) * self.weights['energy']
                 
                 # CE Loss
                 l_ce = F.cross_entropy(preds['class_logits'][b:b+1, p_idx, :], 
@@ -118,12 +134,12 @@ class FinalJointPITLoss(nn.Module):
                                    targets['doas'][b, t_idx, :]) * self.weights['doa']
                 
                 # 배치 내 슬롯 단위로 합산
-                final_loss += (l_snr + l_ce + l_doa)
+                final_loss += (l_si_sdr + l_ce + l_doa)
                 
                 # 로깅을 위한 분리 저장
-                loss_components['snr'] += l_snr.item()
-                loss_components['ce'] += l_ce.item()
-                loss_components['doa'] += l_doa.item()
+                loss_components['si_sdr'] += l_si_sdr.detach()
+                loss_components['ce'] += l_ce.detach()
+                loss_components['doa'] += l_doa.detach()
 
         # 전체(B * K) 평균으로 보정
         total_items = B * K
@@ -131,7 +147,7 @@ class FinalJointPITLoss(nn.Module):
         
         return {
             'loss': final_loss, # Optimizer가 step()을 밟을 최종 스칼라 텐서
-            'loss_snr_scaled': loss_components['snr'] / total_items,
+            'loss_si_sdr_scaled': loss_components['si_sdr'] / total_items,
             'loss_ce_scaled': loss_components['ce'] / total_items,
             'loss_doa_scaled': loss_components['doa'] / total_items
         }
