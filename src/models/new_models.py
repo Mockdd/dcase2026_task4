@@ -60,7 +60,7 @@ class SpatialFeatureExtractor(nn.Module):
 class BEATS(nn.Module):
     def __init__(self):
         super().__init__()
-        checkpoint = torch.load("/checkpoints/BEATs_iter3_plus_AS2M.pt")
+        checkpoint = torch.load("/teamspace/studios/this_studio/dcase2026_task4/checkpoints/BEATs_iter3_plus_AS2M.pt") # 체크포인트 절대 경로로 수정
         cfg = BEATsConfig(checkpoint['cfg'])
         self.beats = BEATs(cfg)
         self.beats.load_state_dict(checkpoint['model'])

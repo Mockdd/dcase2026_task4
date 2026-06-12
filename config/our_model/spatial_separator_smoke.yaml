@@ -1,0 +1,175 @@
+task_name: spatial_separator
+
+deterministic: True
+manual_seed: 0
+
+# ════════════════════════════════════════════════════════════
+# DataModule  (baseline DatasetS3 generate 모드 그대로 사용)
+# ════════════════════════════════════════════════════════════
+datamodule:
+    module: src.datamodules.new_datamodule
+    main: DataModule
+    args:
+        train_dataloader:
+            batch_size: 2    
+            num_workers: 16
+            persistent_workers: true
+            dataset:
+                module: src.datamodules.new_dataset
+                main: DatasetS3
+                args:
+                    config:
+                        mode: generate
+                        spatial_sound_scene:
+                            duration: 10.0
+                            sr: 32000
+                            max_event_overlap: 3
+                            max_event_dur: 10.0
+                            ref_db: -55
+                            foreground_dir: data/dev_set/sound_event/train
+                            background_dir: data/dev_set/noise/train
+                            interference_dir: data/dev_set/interference/train
+                            room_config:
+                                module: src.modules.spatial_audio_synthesizer.room
+                                main: SofaRoom
+                                args:
+                                    path: data/dev_set/room_ir/train
+                                    direct_range_ms: [6, 50]
+                        dupse_rate: 0.5
+                        dupse_min_angle: 60.0
+                        max_n_dupse: 2
+                        dupse_exclusion_folder_depth: 1
+                        snr_range: [5, 20]
+                        nevent_range: [0, 3]
+                        ninterference_range: [0, 2]
+                        inteference_snr_range: [0, 15]
+                        dataset_length: 10
+                        shuffle_label: true
+                        fg_return:
+                            dry: true
+                            dry_channel: 0
+                            metadata: true
+                    n_sources: 3
+                    label_set: dcase2026t4
+                    return_source: true
+                    label_vector_mode: stack 
+                    silence_label_mode: zeros
+                    return_meta: true           # metadata dict 포함 (event_position 접근)
+
+        val_dataloader:
+            batch_size: 8
+            num_workers: 8
+            persistent_workers: true
+            dataset:
+                module: src.datamodules.new_dataset
+                main: DatasetS3
+                args:
+                    config:
+                        mode: metadata
+                        metadata_list: data/dev_set/metadata/valid.json
+                        fg_return: {dry: true, dry_channel: 0, metadata: true}
+                        sr: 32000
+                    n_sources: 3
+                    label_set: dcase2026t4
+                    return_source: true
+                    label_vector_mode: stack
+                    silence_label_mode: zeros
+                    return_meta: true
+
+# ════════════════════════════════════════════════════════════
+# LightningModule
+# ════════════════════════════════════════════════════════════
+lightning_module:
+    module: src.training.lightningmodule.spatial_separator_lightning
+    main: SpatialSeparatorLightning
+    args:
+        model:
+            module: src.models.new_models
+            main: SpatialSeparatorModel
+            args:
+                n_classes: 18
+                hidden_dim: 256
+                n_compressed: 32
+                doa_threshold: 0.1
+                K_max: 3
+
+        loss:
+            module: src.training.loss.new_final_loss
+            main: FinalJointPITLoss
+            args:
+                n_classes: 18
+                weights:
+                    si_sdr: 0.3
+                    energy: 0.1
+                    ce: 1.0
+                    doa: 10.0
+
+
+        optimizer:
+            module: torch.optim
+            main: AdamW
+            args:
+                params: null     
+                lr: 0.0001
+                betas: [0.9, 0.999]
+                eps: 1.0e-8
+                weight_decay: 0.01
+
+        is_validation: false
+
+# ════════════════════════════════════════════════════════════
+# Trainer
+# ════════════════════════════════════════════════════════════
+train:
+    callbacks:
+        -
+            name: checkpoint
+            module: lightning.pytorch.callbacks
+            main: ModelCheckpoint
+            args:
+                every_n_epochs: 1
+                filename: "{epoch}"
+                save_top_k: 1
+                save_last: true
+                monitor: epoch_val/loss 
+                mode: min
+                verbose: false
+                dirpath: null
+
+        -
+            name: tqdm
+            module: lightning.pytorch.callbacks
+            main: TQDMProgressBar
+            args:
+                refresh_rate: 1
+                process_position: 0
+
+        -
+            name: early_stopping
+            module: lightning.pytorch.callbacks
+            main: EarlyStopping
+            args:
+                monitor: epoch_train/loss
+                patience: 10
+                mode: min
+                verbose: true
+
+    trainer:
+        module: lightning.pytorch
+        main: Trainer
+        args:
+            accelerator: auto
+            devices: auto
+            strategy: auto
+            num_nodes: 1
+            precision: bf16-mixed
+            logger: null
+            max_epochs: 3
+            log_every_n_steps: 1
+            use_distributed_sampler: true
+            sync_batchnorm: false # 멀티GPU 사용 시 배치 정규화 레이어 동기화 여부
+            num_sanity_val_steps: 2
+            enable_checkpointing: true
+            enable_progress_bar: true
+            enable_model_summary: true
+            gradient_clip_val: 0.5
