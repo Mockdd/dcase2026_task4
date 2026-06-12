@@ -52,7 +52,7 @@ def main():
     fsd_dir   = Path(args.fsd_dir)
     bg_dir    = Path(args.output_dir)
     dev_csv   = fsd_dir / "FSD50K.ground_truth/dev.csv"
-    audio_dir = fsd_dir / "FSD50K.dev_audio/FSD50K.dev_audio"
+    audio_dir = fsd_dir / "FSD50K.dev_audio"
 
     assert dev_csv.exists(),   f"dev.csv 없음: {dev_csv}"
     assert audio_dir.exists(), f"dev_audio 없음: {audio_dir}"
