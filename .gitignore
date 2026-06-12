@@ -4,4 +4,9 @@
 *.pth
 *.pdf
 *.png
-.DS_Store
+.DS_Storedata/
+checkpoints/
+SpAudSyn/
+unilm/
+val
+data/

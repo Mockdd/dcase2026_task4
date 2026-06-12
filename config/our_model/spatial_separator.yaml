@@ -11,9 +11,9 @@ datamodule:
     main: DataModule
     args:
         train_dataloader:
-            batch_size: 2          # 스모크: 작게. 실전: 4~8
-            num_workers: 0         # 스모크: 0 (fork 없이 빠름). 실전: 4
-            persistent_workers: false
+            batch_size: 8    
+            num_workers: 16
+            persistent_workers: true
             dataset:
                 module: src.datamodules.new_dataset
                 main: DatasetS3
@@ -43,7 +43,7 @@ datamodule:
                         nevent_range: [0, 3]
                         ninterference_range: [0, 2]
                         inteference_snr_range: [0, 15]
-                        dataset_length: 8     # ← 스모크용: 8개. 실전: 10112
+                        dataset_length: 10112
                         shuffle_label: true
                         fg_return:
                             dry: true
@@ -56,29 +56,25 @@ datamodule:
                     silence_label_mode: zeros
                     return_meta: true           # metadata dict 포함 (event_position 접근)
 
-        # ─── val은 스모크 시 완전히 비활성화 ───────────────────
-        # is_validation: false 로 설정하면 validation_step 자체가 등록 안 됨.
-        # 아래 val_dataloader 섹션은 실전 학습 때 활성화하세요.
-        #
-        # val_dataloader:
-        #     batch_size: 2
-        #     num_workers: 2
-        #     persistent_workers: false
-        #     dataset:
-        #         module: src.datamodules.new_dataset
-        #         main: DatasetS3
-        #         args:
-        #             config:
-        #                 mode: metadata
-        #                 metadata_list: data/dev_set/metadata/valid.json
-        #                 fg_return: {dry: true, dry_channel: 0, metadata: true}
-        #                 sr: 32000
-        #             n_sources: 3
-        #             label_set: dcase2026t4
-        #             return_source: true
-        #             label_vector_mode: stack
-        #             silence_label_mode: zeros
-        #             return_meta: true
+        val_dataloader:
+            batch_size: 8
+            num_workers: 8
+            persistent_workers: true
+            dataset:
+                module: src.datamodules.new_dataset
+                main: DatasetS3
+                args:
+                    config:
+                        mode: metadata
+                        metadata_list: data/dev_set/metadata/valid.json
+                        fg_return: {dry: true, dry_channel: 0, metadata: true}
+                        sr: 32000
+                    n_sources: 3
+                    label_set: dcase2026t4
+                    return_source: true
+                    label_vector_mode: stack
+                    silence_label_mode: zeros
+                    return_meta: true
 
 # ════════════════════════════════════════════════════════════
 # LightningModule
@@ -119,7 +115,7 @@ lightning_module:
                 eps: 1.0e-8
                 weight_decay: 0.01
 
-        is_validation: false          # 실전: true
+        is_validation: true
 
 # ════════════════════════════════════════════════════════════
 # Trainer
@@ -135,7 +131,7 @@ train:
                 filename: "{epoch}"
                 save_top_k: 1
                 save_last: true
-                monitor: epoch_train/loss   # val 없으니 train loss 모니터링
+                monitor: epoch_val/loss 
                 mode: min
                 verbose: false
                 dirpath: null
@@ -148,6 +144,16 @@ train:
                 refresh_rate: 1
                 process_position: 0
 
+        -
+            name: early_stopping
+            module: lightning.pytorch.callbacks
+            main: EarlyStopping
+            args:
+                monitor: epoch_val/loss
+                patience: 10
+                mode: min
+                verbose: true
+
     trainer:
         module: lightning.pytorch
         main: Trainer
@@ -156,16 +162,14 @@ train:
             devices: auto
             strategy: auto
             num_nodes: 1
-            precision: 32-true
+            precision: bf16-mixed
             logger: null
-            max_epochs: 1
+            max_epochs: 100
             log_every_n_steps: 1
             use_distributed_sampler: true
             sync_batchnorm: false # 멀티GPU 사용 시 배치 정규화 레이어 동기화 여부
-            num_sanity_val_steps: 0       # ← 필수: val sanity check 끔
+            num_sanity_val_steps: 2
             enable_checkpointing: true
             enable_progress_bar: true
             enable_model_summary: true
-            limit_train_batches: 1        # ← 스모크: 1-step만. 실전: null
-            limit_val_batches: 0          # ← 스모크: val 완전 비활성
             gradient_clip_val: 0.5
