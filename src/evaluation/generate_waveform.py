@@ -104,8 +104,16 @@ def main(args):
                             num_workers=args.batchsize)
 
     # Load models
-    
-    model = initialize_config(config['model'], reload=True)
+    # lightning_module + ckpt_path 방식 (SpatialSeparatorModel) 또는
+    # 기존 model 방식 (베이스라인) 둘 다 지원
+    if 'lightning_module' in config and 'ckpt_path' in config:
+        from src.utils import lightning_load_from_checkpoint
+        lightning_module = lightning_load_from_checkpoint(
+            config['lightning_module'], config['ckpt_path']
+        )
+        model = lightning_module.model
+    else:
+        model = initialize_config(config['model'], reload=True)
     model.eval(); model = model.to('cuda')
 
     probs_list = []
