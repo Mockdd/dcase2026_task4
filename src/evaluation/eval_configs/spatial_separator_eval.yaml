@@ -1,0 +1,71 @@
+# eval config for SpatialSeparatorModel
+# 사용법:
+#   bash generate_waveform.sh \
+#     --config src/evaluation/eval_configs/spatial_separator_eval.yaml \
+#     --output_dir /content/drive/MyDrive/dcase2026_task4/workspace/submission \
+#     --author <이름> --affiliation <소속> --submission_number 1
+#
+# 학습 완료 후 ckpt_path를 실제 체크포인트 경로로 수정하세요.
+
+# dev_set test 평가용 (CAPI-SDRi 계산)
+dataset:
+    module: src.datamodules.new_dataset
+    main: DatasetS3
+    args:
+        config:
+            mode: waveform
+            soundscape_dir: data/dev_set/synthesized/test/soundscape
+            oracle_target_dir: data/dev_set/synthesized/test/oracle_target
+            sr: 32000
+        n_sources: 3
+        label_set: dcase2026t4
+        return_source: true
+        label_vector_mode: stack
+        silence_label_mode: onehot
+        return_meta: false
+
+# eval_set 결과 생성용 (제출 wav)
+eval_dataset:
+    module: src.datamodules.new_dataset
+    main: DatasetS3
+    args:
+        config:
+            mode: waveform
+            soundscape_dir: data/eval_set/synthesized/eval/soundscape
+            sr: 32000
+        n_sources: 3
+        label_set: dcase2026t4
+        return_source: true
+        label_vector_mode: stack
+        silence_label_mode: onehot
+        return_meta: false
+
+# Lightning 체크포인트에서 모델 추출
+# generate_waveform.py가 이 설정으로 SpatialSeparatorLightning.load_from_checkpoint() 호출
+ckpt_path: /content/drive/MyDrive/dcase2026_task4/workspace/checkpoints/last.ckpt
+
+lightning_module:
+    module: src.training.lightningmodule.spatial_separator_lightning
+    main: SpatialSeparatorLightning
+    args:
+        model:
+            module: src.models.new_models
+            main: SpatialSeparatorModel
+            args:
+                n_classes: 18
+                hidden_dim: 256
+                n_compressed: 32
+                doa_threshold: 0.1
+                K_max: 3
+        loss:
+            module: src.training.loss.new_final_loss
+            main: FinalJointPITLoss
+            args:
+                n_classes: 18
+        optimizer:
+            module: torch.optim
+            main: AdamW
+            args:
+                params: null
+                lr: 0.0001
+        is_validation: false
