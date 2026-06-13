@@ -60,7 +60,7 @@ class SpatialFeatureExtractor(nn.Module):
 class BEATS(nn.Module):
     def __init__(self):
         super().__init__()
-        checkpoint = torch.load("/teamspace/studios/this_studio/dcase2026_task4/checkpoints/BEATs_iter3_plus_AS2M.pt") # 체크포인트 절대 경로로 수정
+        checkpoint = torch.load("/content/BEATs_iter3_plus_AS2M.pt")
         cfg = BEATsConfig(checkpoint['cfg'])
         self.beats = BEATs(cfg)
         self.beats.load_state_dict(checkpoint['model'])
@@ -307,4 +307,47 @@ class SpatialSeparatorModel(nn.Module):
             "doa_pred": doa_pred,
             "class_logits": class_logits,
             "k_pred": (class_logits.argmax(dim=-1) != self.n_classes).sum(dim=-1)
+        }
+
+    def predict_label_separate(self, mixture):
+        """
+        generate_waveform.py 호환 인터페이스.
+
+        Args:
+            mixture: [B, 4, T]
+
+        Returns dict:
+            'label'         : list of B x [K 클래스 이름 문자열 or 'silence']
+            'waveform'      : [B, K, 1, T]  (generate_waveform.py가 [:, :, 0, :] 로 squeeze)
+            'probabilities' : [B, K, n_classes+1] softmax 확률
+        """
+        from src.utils import LABELS
+        label_list = LABELS['dcase2026t4']  # 18개 클래스 이름
+
+        output = self.forward(mixture)          # forward 재사용
+
+        waveforms    = output['waveforms']      # [B, K, T]
+        class_logits = output['class_logits']   # [B, K, n_classes+1]
+
+        probs      = torch.softmax(class_logits, dim=-1)   # [B, K, n_classes+1]
+        pred_idx   = class_logits.argmax(dim=-1)           # [B, K]
+
+        B, K, T = waveforms.shape
+
+        # 클래스 인덱스 → 이름 (silence = n_classes)
+        batch_labels = []
+        for b in range(B):
+            slot_labels = []
+            for k in range(K):
+                idx = pred_idx[b, k].item()
+                if idx == self.n_classes:
+                    slot_labels.append('silence')
+                else:
+                    slot_labels.append(label_list[idx])
+            batch_labels.append(slot_labels)
+
+        return {
+            'label':         batch_labels,                          # list[B][K] str
+            'waveform':      waveforms.unsqueeze(2),                # [B, K, 1, T]
+            'probabilities': probs,                                 # [B, K, n_classes+1]
         }
